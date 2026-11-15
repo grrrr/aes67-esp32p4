@@ -149,6 +149,25 @@ menu "AES67 RAVENNA Component"
         help
             Default device node name used in SDP and mDNS advertisements.
 
+    config AES67_MEDIA_CLOCK
+        bool "Lock the I2S sample clock (APLL) to PTP"
+        default y
+        help
+            Runs a servo that measures the frames I2S has clocked against PTP
+            time and trims the APLL (sigma-delta steps of ~1.5 ppm) so that
+            frequency and phase follow the grandmaster. Without it I2S runs on
+            its crystal and the capture/playback buffers drift (issue #3).
+            Status: aes67_media_clock_get_status(), "media_clock" in
+            /api/ptp. Needs I2S on the APLL (the default here).
+
+    config AES67_MEDIA_CLOCK_MAX_PPM
+        int "Media clock: maximum correction (ppm)"
+        default 200
+        range 10 800
+        depends on AES67_MEDIA_CLOCK
+        help
+            Limit of the servo output. Crystals are typically within +-50 ppm.
+
     config AES67_I2S_PORT
         int "I2S port number"
         default 0

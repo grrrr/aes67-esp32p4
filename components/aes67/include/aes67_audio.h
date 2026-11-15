@@ -167,10 +167,20 @@ void aes67_audio_init_capture(aes67_audio_handle_t handle);
 StreamBufferHandle_t aes67_audio_get_capture_buf(aes67_audio_handle_t handle);
 
 /**
- * Adjust the I2S TX MCLK divider for adaptive clock recovery.
- * ppm_adj: parts-per-million adjustment. +100 = 0.01% faster.
+ * Fine-tune the sample rate by trimming the APLL, absolute from the rate
+ * I2S was set up with (resolution ~1.5 ppm). ppm_adj: +100 = 0.01% faster.
+ * With CONFIG_AES67_MEDIA_CLOCK the servo (aes67_media_clock.h) owns the
+ * trim; don't call this then.
  */
 void aes67_audio_adjust_clock_ppm(aes67_audio_handle_t handle, int32_t ppm_adj);
+
+/**
+ * Where the I2S clock stands: frames the TX DMA has clocked out since
+ * start, and the esp_timer time (us) at which the last DMA block completed.
+ * Any task. Returns false before the first block. Used by the media-clock
+ * servo (aes67_media_clock.h) to measure I2S against PTP.
+ */
+bool aes67_audio_get_clock_stamp(aes67_audio_handle_t handle, uint64_t *frames, int64_t *time_us);
 
 #ifdef __cplusplus
 }

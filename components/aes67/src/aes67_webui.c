@@ -16,6 +16,7 @@
  */
 
 #include "aes67_webui.h"
+#include "aes67_media_clock.h"
 #include "aes67.h"
 #include "aes67_config.h"
 #include "aes67_session.h"
@@ -181,6 +182,9 @@ static esp_err_t handler_api_ptp(httpd_req_t *req)
         aes67_ptp_get_status(ptp, &st);
     }
 
+    aes67_media_clock_status_t mc = { 0 };
+    aes67_media_clock_get_status(&mc);
+
     /* Format grandmaster ID as dash-separated hex */
     char gm_str[24];
     snprintf(gm_str, sizeof(gm_str),
@@ -197,14 +201,18 @@ static esp_err_t handler_api_ptp(httpd_req_t *req)
         "\"domain\":%u,"
         "\"offset_ns\":%ld,"
         "\"jitter_ns\":%ld,"
-        "\"path_delay_ns\":%ld"
+        "\"path_delay_ns\":%ld,"
+        "\"media_clock\":{\"running\":%s,\"locked\":%s,\"phase_frames\":%.2f,"
+        "\"trim_ppm\":%.2f,\"trim_steps\":%ld}"
         "}",
         ptp_lock_str(st.lock_state),
         gm_str,
         st.domain,
         (long)st.offset_ns,
         (long)st.jitter_ns,
-        (long)st.path_delay_ns);
+        (long)st.path_delay_ns,
+        mc.running ? "true" : "false", mc.locked ? "true" : "false",
+        (double)mc.phase_frames, (double)mc.trim_ppm, (long)mc.trim_steps);
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, buf, len);

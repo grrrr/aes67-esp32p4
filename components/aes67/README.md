@@ -29,8 +29,15 @@ The component is the AES67 **engine** plus the drivers it needs:
   48 kHz, packet times from 0.125 ms to 4 ms.
 - **An `esp_vfs_l2tap` receive path** that reads RTP frames at L2 and
   bypasses the lwIP socket layer for low-latency reception.
-- **ISR-driven I2S playback** on an APLL-derived clock, with sub-ppm clock
-  adjustment for media-clock recovery and sample-hold on underrun.
+- **ISR-driven I2S playback** on an APLL-derived clock, with sample-hold on
+  underrun.
+- **Media clock locked to PTP** (`CONFIG_AES67_MEDIA_CLOCK`, on by default):
+  a servo measures the frames I2S has clocked against PTP time and trims the
+  APLL in ~1.5 ppm sigma-delta steps, so the sample clock follows the
+  grandmaster in frequency and phase and the capture/playback buffers keep
+  their fill level. On an ESP32-P4-NANO against a Dante grandmaster: a
+  -24.5 ppm crystal corrected to within +-0.1 frame of phase, settling in
+  ~30 s. Status in `aes67_media_clock_get_status()` and `/api/ptp`.
 - **SAP (RFC 2974)** announce/discover, **SDP** generate/parse
   (AES67-compliant: `a=ts-refclk`, `a=mediaclk`, fractional ptime),
   **mDNS** `_ravenna._udp` advertisement.
@@ -81,7 +88,8 @@ A complete, board-specific example (ESP32-P4-Nano + ES8311) lives in the
 Options live under **AES67 RAVENNA Component** and **PTP Daemon
 Configuration** in `idf.py menuconfig` — max sources/sinks, channels,
 sample rate, packet time, codec, RTP port, PTP domain, jitter-buffer depth,
-PSRAM usage, and task priorities.
+PSRAM usage, task priorities, and the media-clock servo
+(`CONFIG_AES67_MEDIA_CLOCK`, `CONFIG_AES67_MEDIA_CLOCK_MAX_PPM`).
 
 For low-latency audio the example's `sdkconfig.defaults` also enables
 802.3x flow control (`CONFIG_ETH_*`), lwIP IRAM optimizations, and pins the
@@ -91,6 +99,10 @@ network tasks to core 0 — see the repository for the full set.
 
 - **ESP-IDF v5.5+**, target **esp32p4**.
 - Sample rates **44.1 / 48 kHz** (no 96 kHz yet).
+- The media-clock servo trims the APLL through private ESP-IDF API
+  (`hal/clk_tree_ll.h`, REGI2C; checked against v5.5) and moves everything
+  clocked from the APLL. The EMAC must not use the APLL (on the P4 its RMII
+  clock comes from the PHY).
 - The lowest-latency `esp_eth` Rx hook is example wiring, not a component
   API (see above).
 - The bundled Web UI is optional and can be left out.

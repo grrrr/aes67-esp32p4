@@ -7,6 +7,8 @@ idf_component_register(
         "src/aes67_sdp.c"
         "src/aes67_session.c"
         "src/aes67_audio.c"
+        "src/aes67_apll.c"
+        "src/aes67_media_clock.c"
         "src/aes67_convert.c"
         "src/aes67_net.c"
         "src/aes67_mdns.c"

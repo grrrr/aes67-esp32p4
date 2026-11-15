@@ -18,6 +18,7 @@
 #include "aes67_sap.h"
 #include "aes67_audio.h"
 #include "aes67_session.h"
+#include "aes67_media_clock.h"
 #include "aes67_hw_timer.h"
 
 #include <stdlib.h>
@@ -552,6 +553,17 @@ esp_err_t aes67_node_start(aes67_node_handle_t handle)
         ESP_LOGW(TAG, "failed to create refclk task: SDP keeps its start-up reference clock");
     }
 
+#if CONFIG_AES67_MEDIA_CLOCK
+    /* lock the I2S sample clock (APLL) to PTP, see aes67_media_clock.h */
+    if (handle->audio) {
+        esp_err_t mc = aes67_media_clock_start(handle->ptp, handle->audio,
+                                               handle->config.audio.sample_rate);
+        if (mc != ESP_OK) {
+            ESP_LOGW(TAG, "media clock servo not started: %s", esp_err_to_name(mc));
+        }
+    }
+#endif
+
     ESP_LOGI(TAG, "node started");
 
     return ESP_OK;
@@ -568,6 +580,9 @@ esp_err_t aes67_node_stop(aes67_node_handle_t handle)
     }
 
     /* Tear down in reverse order */
+#if CONFIG_AES67_MEDIA_CLOCK
+    aes67_media_clock_stop();
+#endif
     if (handle->refclk_task) {
         /* The task uses the session and SAP handles: wait until it is gone */
         handle->refclk_stop = true;

@@ -24,6 +24,7 @@
 #include "hal/i2s_ll.h"
 #include "hal/hal_utils.h"
 #include "soc/hp_sys_clkrst_struct.h"
+#include "aes67_apll.h"
 
 static const char *TAG = "aes67_audio";
 
@@ -202,6 +203,48 @@ void aes67_audio_slot_write(const void *data, uint32_t len)
     }
 }
 
+/* Clock stamp for the media-clock servo (aes67_media_clock.c): frames the TX
+ * DMA has clocked out since start, and the esp_timer time of the last
+ * completed block. Written by the TX DMA ISR, read by any task (seqlock).
+ * I2S runs 32-bit stereo: 8 bytes per frame. */
+#define STAMP_BYTES_PER_FRAME 8
+static volatile uint32_t s_stamp_seq;
+static uint64_t s_stamp_frames;
+static int64_t s_stamp_us;
+
+static IRAM_ATTR void clock_stamp(size_t bytes)
+{
+    const int64_t now = esp_timer_get_time();
+    const uint32_t seq = s_stamp_seq;
+    __atomic_store_n(&s_stamp_seq, seq + 1, __ATOMIC_RELAXED);     /* odd: writing */
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+    s_stamp_frames += bytes / STAMP_BYTES_PER_FRAME;
+    s_stamp_us = now;
+    __atomic_store_n(&s_stamp_seq, seq + 2, __ATOMIC_RELEASE);     /* even: done */
+}
+
+bool aes67_audio_get_clock_stamp(aes67_audio_handle_t handle, uint64_t *frames, int64_t *time_us)
+{
+    (void)handle;
+    uint32_t s0, s1;
+    do {
+        s0 = __atomic_load_n(&s_stamp_seq, __ATOMIC_ACQUIRE);
+        *frames = s_stamp_frames;
+        *time_us = s_stamp_us;
+        __atomic_thread_fence(__ATOMIC_ACQUIRE);
+        s1 = __atomic_load_n(&s_stamp_seq, __ATOMIC_RELAXED);
+    } while ((s0 & 1) || s0 != s1);
+    return s0 != 0;
+}
+
+/* TX DMA ISR when the playback path does not use one: stamps only */
+static IRAM_ATTR bool on_i2s_tx_stamp(i2s_chan_handle_t handle, i2s_event_data_t *event,
+                                       void *user_ctx)
+{
+    clock_stamp(event->size);
+    return false;
+}
+
 /* Last frame for sample-hold on underrun (less audible than silence) */
 static int32_t s_last_frame[2] = {0, 0};  /* Stereo max */
 
@@ -214,6 +257,7 @@ static IRAM_ATTR bool on_i2s_tx_sent_sbuf(i2s_chan_handle_t handle,
 {
     BaseType_t woken = pdFALSE;
     s_isr_fires++;
+    clock_stamp(event->size);
 
     if (s_isr_stream_buf) {
         size_t received = xStreamBufferReceiveFromISR(s_isr_stream_buf,
@@ -580,12 +624,14 @@ esp_err_t aes67_audio_start(aes67_audio_handle_t handle)
 
     /* Register DMA ISR callback for direct stream buffer -> DMA transfer.
      * This bypasses i2s_channel_write and the playback task entirely. */
-    /* Register TX DMA ISR (playback: stream buffer -> I2S) */
-    if ((s_isr_stream_buf != NULL)) {
+    /* Register TX DMA ISR (playback: stream buffer -> I2S). Without the ISR
+     * playback path, a callback that only stamps the clock for the
+     * media-clock servo. */
+    {
         i2s_event_callbacks_t tx_cbs = {
             .on_recv = NULL,
             .on_recv_q_ovf = NULL,
-            .on_sent = on_i2s_tx_sent_sbuf,
+            .on_sent = s_isr_stream_buf ? on_i2s_tx_sent_sbuf : on_i2s_tx_stamp,
             .on_send_q_ovf = NULL,
         };
         esp_err_t cb_ret = i2s_channel_register_event_callback(
@@ -938,45 +984,22 @@ void aes67_audio_read_clock_divider(aes67_audio_handle_t handle)
              (unsigned long)base_numerator, (unsigned long)base_denominator);
 }
 
-/* Adjust the I2S TX MCLK divider at runtime to fine-tune sample rate.
- * This is used for adaptive clock recovery: speed up or slow down the
- * I2S clock to match the network source rate.
- * ppm_adj: parts-per-million adjustment. +100 = 0.01% faster. */
+/* Fine-tune the sample rate by trimming the APLL (see aes67_apll.h).
+ * ppm_adj: parts-per-million adjustment, absolute from the rate I2S was set
+ * up with. +100 = 0.01% faster. Resolution ~1.5 ppm.
+ *
+ * Earlier versions rewrote the I2S0 TX fractional divider (passing through
+ * a small divider value on every call). The APLL trim keeps the divider and
+ * moves everything on the APLL together, TX and RX alike.
+ * With CONFIG_AES67_MEDIA_CLOCK the servo owns the trim: don't call this. */
 void aes67_audio_adjust_clock_ppm(aes67_audio_handle_t handle, int32_t ppm_adj)
 {
-    if (!handle || base_denominator == 0) return;
-
-    /* Adjust numerator relative to the cached base values.
-     * Increasing numerator = larger divider = slower clock.
-     * ppm_adj > 0 means "source is faster, speed up I2S" = decrease numerator. */
-    int64_t adj = (int64_t)ppm_adj * (int64_t)base_denominator / 1000000;
-    int32_t new_numer = (int32_t)base_numerator - (int32_t)adj;
-    if (new_numer < 1) new_numer = 1;
-    if (new_numer > (int32_t)base_denominator - 1) new_numer = base_denominator - 1;
-
-    /* Convert numerator/denominator back to x,y,z,yn1 format */
-    uint32_t numer = (uint32_t)new_numer;
-    uint32_t denom = base_denominator;
-    uint32_t div_yn1 = numer * 2 > denom;
-    uint32_t div_z = div_yn1 ? denom - numer : numer;
-    uint32_t div_x = div_z ? (denom / div_z - 1) : 0;
-    uint32_t div_y = div_z ? (denom % div_z) : 0;
-
-    /* Write to I2S0 TX clock divider registers.
-     * Workaround: set small div first, then target. */
-    HAL_FORCE_MODIFY_U32_REG_FIELD(HP_SYS_CLKRST.peri_clk_ctrl13,
-                                    reg_i2s0_tx_div_n, 2);
-    HP_SYS_CLKRST.peri_clk_ctrl14.reg_i2s0_tx_div_yn1 = 0;
-    HP_SYS_CLKRST.peri_clk_ctrl14.reg_i2s0_tx_div_y = 1;
-    HP_SYS_CLKRST.peri_clk_ctrl14.reg_i2s0_tx_div_z = 0;
-    HP_SYS_CLKRST.peri_clk_ctrl13.reg_i2s0_tx_div_x = 0;
-    /* Set target */
-    HP_SYS_CLKRST.peri_clk_ctrl14.reg_i2s0_tx_div_yn1 = div_yn1;
-    HP_SYS_CLKRST.peri_clk_ctrl14.reg_i2s0_tx_div_z = div_z;
-    HP_SYS_CLKRST.peri_clk_ctrl14.reg_i2s0_tx_div_y = div_y;
-    HP_SYS_CLKRST.peri_clk_ctrl13.reg_i2s0_tx_div_x = div_x;
-    HAL_FORCE_MODIFY_U32_REG_FIELD(HP_SYS_CLKRST.peri_clk_ctrl13,
-                                    reg_i2s0_tx_div_n, base_div_n);
+    if (!handle || aes67_apll_init() != ESP_OK) return;
+    aes67_apll_status_t a;
+    aes67_apll_get_status(&a);
+    if (a.ppm_per_step <= 0) return;
+    const float steps = (float)ppm_adj / a.ppm_per_step;
+    aes67_apll_set_steps((int32_t)(steps + (steps >= 0 ? 0.5f : -0.5f)));
 }
 
 SemaphoreHandle_t aes67_audio_get_dma_sem(aes67_audio_handle_t handle)
