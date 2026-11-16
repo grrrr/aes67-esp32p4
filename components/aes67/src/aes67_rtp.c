@@ -97,6 +97,10 @@ struct aes67_rtp_engine {
      * bypassing socket layer and its ~412us per-packet overhead. */
     struct udp_pcb *raw_pcb;
     int32_t *raw_sample_buf;  /* Pre-allocated conversion buffer */
+    /* Application send hook: if set, process_tx hands each packet to it
+     * instead of sendto() (e.g. straight to the Ethernet driver). */
+    aes67_rtp_tx_hook_t tx_hook;
+    void *tx_hook_ctx;
 };
 
 /* --- Ring buffer helpers --- */
@@ -1036,6 +1040,80 @@ esp_err_t aes67_rtp_source_discard(aes67_rtp_stream_handle_t stream)
     return ESP_OK;
 }
 
+void aes67_rtp_engine_set_tx_hook(aes67_rtp_engine_handle_t handle, aes67_rtp_tx_hook_t hook, void *ctx)
+{
+    if (!handle) return;
+    handle->tx_hook_ctx = ctx;
+    handle->tx_hook = hook;
+}
+
+esp_err_t aes67_rtp_sink_input(aes67_rtp_stream_handle_t stream, const uint8_t *pkt, size_t len)
+{
+    /* one caller at a time (the application's receive path); the sample
+     * buffer is shared by all sinks */
+    #define SINK_INPUT_FRAMES 192                   /* 4 ms at 48 kHz */
+    static int32_t *sample_buf;                      /* on first use: only receivers pay */
+    if (!stream || stream->direction != AES67_STREAM_SINK || !stream->active) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (!sample_buf) {
+        sample_buf = heap_caps_malloc(CONFIG_AES67_MAX_CHANNELS_PER_STREAM * SINK_INPUT_FRAMES * sizeof(int32_t),
+                                      MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        if (!sample_buf) return ESP_ERR_NO_MEM;
+    }
+    aes67_rtp_header_t hdr;
+    if (len < AES67_RTP_HEADER_SIZE || !rtp_parse_header(pkt, len, &hdr)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (hdr.pt != stream->config.payload_type) {
+        stream->status.status_flags |= AES67_RTP_STATUS_PT_ERROR;
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (stream->status.packets_received > 0) {
+        const uint16_t expected = stream->status.last_seq + 1;
+        if (hdr.seq != expected) {
+            const int16_t diff = (int16_t)(hdr.seq - expected);
+            if (diff > 0) stream->status.packets_lost += diff;
+            stream->status.seq_errors++;
+            stream->status.status_flags |= AES67_RTP_STATUS_SEQ_ERROR;
+        }
+    }
+    stream->ssrc = hdr.ssrc;
+    stream->status.last_seq = hdr.seq;
+    stream->status.last_rtp_timestamp = hdr.timestamp;
+    stream->status.status_flags |= AES67_RTP_STATUS_RECEIVING;
+
+    const int64_t now_us = esp_timer_get_time();
+    if (stream->last_rx_time_us > 0) {
+        const int64_t expected_us = (int64_t)stream->samples_per_packet * 1000000LL / stream->config.sample_rate;
+        int32_t dev = (int32_t)(now_us - stream->last_rx_time_us - expected_us);
+        if (dev < 0) dev = -dev;
+        stream->jitter_us += (dev - stream->jitter_us) / 16;
+        stream->status.jitter_us = stream->jitter_us;
+    }
+    stream->last_rx_time_us = now_us;
+
+    const uint8_t channels = stream->config.channels;
+    const uint32_t frame_bytes = (uint32_t)channels * stream->config.word_length;
+    const uint32_t payload_len = (uint32_t)len - AES67_RTP_HEADER_SIZE;
+    if (frame_bytes == 0 || payload_len < frame_bytes) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    uint32_t frames = payload_len / frame_bytes;
+    const uint32_t max_frames = CONFIG_AES67_MAX_CHANNELS_PER_STREAM * SINK_INPUT_FRAMES / channels;
+    if (frames > max_frames) frames = max_frames;
+    stream->convert_from_net(pkt + AES67_RTP_HEADER_SIZE, sample_buf, frames, channels);
+
+    const uint32_t bytes = frames * channels * sizeof(int32_t);
+    stream->status.packets_received++;
+    if (ringbuf_free(&stream->ring) < bytes) {      /* all or nothing, like the source side */
+        stream->status.status_flags |= AES67_RTP_STATUS_OVERFLOW;
+        return ESP_ERR_NO_MEM;
+    }
+    ringbuf_write(&stream->ring, (const uint8_t *)sample_buf, bytes);
+    return ESP_OK;
+}
+
 esp_err_t aes67_rtp_sink_read(aes67_rtp_stream_handle_t stream,
                               void *samples, uint32_t frame_count)
 {
@@ -1189,9 +1267,16 @@ esp_err_t aes67_rtp_engine_process_tx(aes67_rtp_engine_handle_t handle,
 
         /* Send the packet */
         uint32_t pkt_size = AES67_RTP_HEADER_SIZE + s->packet_payload_size;
-        ssize_t sent = sendto(s->tx_sock, pkt, pkt_size, 0,
-                              (struct sockaddr *)&s->dest_addr,
-                              sizeof(s->dest_addr));
+        ssize_t sent;
+        if (engine->tx_hook) {
+            sent = engine->tx_hook(engine->tx_hook_ctx, pkt, pkt_size, &s->dest_addr,
+                                   s->config.dscp, s->config.ttl) == ESP_OK ? (ssize_t)pkt_size : -1;
+            if (sent < 0) errno = EIO;
+        } else {
+            sent = sendto(s->tx_sock, pkt, pkt_size, 0,
+                          (struct sockaddr *)&s->dest_addr,
+                          sizeof(s->dest_addr));
+        }
         if (sent < 0) {
             ESP_LOGW(TAG, "sendto failed for stream [%d]: %d (%s)",
                      i, errno, strerror(errno));

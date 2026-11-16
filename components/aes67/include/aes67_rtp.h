@@ -161,6 +161,37 @@ esp_err_t aes67_rtp_source_write(aes67_rtp_stream_handle_t stream,
 esp_err_t aes67_rtp_source_discard(aes67_rtp_stream_handle_t stream);
 
 /**
+ * Feed one received RTP packet (RTP header + payload) into a sink stream,
+ * bypassing the engine's socket: for an application that takes RTP out of
+ * its Ethernet input path itself. Checks the payload type, counts lost
+ * packets, converts and writes into the sink's buffer (all or nothing).
+ * Call from one task only.
+ *
+ * @return ESP_OK, ESP_ERR_NO_MEM if the buffer is full, other errors for
+ *         packets that do not fit the stream
+ */
+esp_err_t aes67_rtp_sink_input(aes67_rtp_stream_handle_t stream, const uint8_t *pkt, size_t len);
+
+/**
+ * Send hook: if set, aes67_rtp_engine_process_tx() passes each finished RTP
+ * packet (header + payload) here instead of sending it on the socket, e.g.
+ * to build the frame and give it to the Ethernet driver directly.
+ *
+ * @param ctx   as given to aes67_rtp_engine_set_tx_hook()
+ * @param pkt   RTP packet, valid during the call
+ * @param dst   destination address and port (network order)
+ * @param dscp  DSCP of the stream (e.g. 46 = EF)
+ * @param ttl   multicast TTL of the stream
+ * @return ESP_OK if sent
+ */
+struct sockaddr_in;
+typedef esp_err_t (*aes67_rtp_tx_hook_t)(void *ctx, const uint8_t *pkt, size_t len,
+                                         const struct sockaddr_in *dst, uint8_t dscp, uint8_t ttl);
+
+/** Set (or clear with NULL) the send hook. Set it before sources send. */
+void aes67_rtp_engine_set_tx_hook(aes67_rtp_engine_handle_t handle, aes67_rtp_tx_hook_t hook, void *ctx);
+
+/**
  * Read audio samples from a sink stream's jitter buffer (called by audio driver).
  * Returns silence if the jitter buffer is empty or the stream is muted.
  *
