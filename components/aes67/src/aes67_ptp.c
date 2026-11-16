@@ -28,8 +28,18 @@ static const char *TAG = "aes67_ptp";
 
 /* Thresholds for lock state machine */
 #define PTP_LOCKING_THRESHOLD_NS    (10 * 1000 * 1000)   /* 10 ms  */
-#define PTP_LOCKED_THRESHOLD_NS     (1000)                /* 1 us   */
-#define PTP_LOCKED_STABLE_COUNT     4                     /* iterations at < 1us before locked */
+/* "Locked" means good enough for audio, with hysteresis. Through switches
+ * without PTP support (no transparent clock) a Sync waits behind whatever
+ * frame is on the wire: 0-100 us on a 100 Mbit/s link carrying multicast
+ * audio. With a 1 us threshold "locked" held < 1 % of the time there. */
+#ifndef PTP_LOCKED_THRESHOLD_NS
+#define PTP_LOCKED_THRESHOLD_NS     (50 * 1000)           /* 50 us to lock */
+#endif
+#ifndef PTP_UNLOCK_THRESHOLD_NS
+#define PTP_UNLOCK_THRESHOLD_NS     (200 * 1000)          /* 200 us ... */
+#endif
+#define PTP_UNLOCK_COUNT            2                     /* ... in a row to unlock */
+#define PTP_LOCKED_STABLE_COUNT     4                     /* polls below the lock threshold */
 #define PTP_MONITOR_INTERVAL_MS     500
 #define PTP_MONITOR_STACK_SIZE      4096
 #define PTP_MONITOR_PRIORITY        10  /* Above SAP, below RTP/audio */
@@ -106,6 +116,7 @@ static bool ptp_update_lock_state(struct aes67_ptp_ctx *ctx, int64_t offset_ns)
                 ctx->lock_state = AES67_PTP_LOCKED;
                 ESP_LOGI(TAG, "PTP locked (offset %lld ns after %d stable polls)",
                          (long long)offset_ns, ctx->stable_count);
+                ctx->stable_count = 0;
             }
         } else {
             /* Still converging but not yet sub-microsecond */
@@ -118,10 +129,14 @@ static bool ptp_update_lock_state(struct aes67_ptp_ctx *ctx, int64_t offset_ns)
             ctx->lock_state = AES67_PTP_UNLOCKED;
             ctx->stable_count = 0;
             ESP_LOGW(TAG, "PTP lost lock completely (offset %lld ns)", (long long)offset_ns);
-        } else if (abs_offset >= PTP_LOCKED_THRESHOLD_NS) {
-            ctx->lock_state = AES67_PTP_LOCKING;
+        } else if (abs_offset >= PTP_UNLOCK_THRESHOLD_NS) {
+            if (++ctx->stable_count >= PTP_UNLOCK_COUNT) {    /* counts bad polls here */
+                ctx->lock_state = AES67_PTP_LOCKING;
+                ctx->stable_count = 0;
+                ESP_LOGW(TAG, "PTP drifting (offset %lld ns, re-locking)", (long long)offset_ns);
+            }
+        } else {
             ctx->stable_count = 0;
-            ESP_LOGW(TAG, "PTP drifting (offset %lld ns, re-locking)", (long long)offset_ns);
         }
         break;
     }
