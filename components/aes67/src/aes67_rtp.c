@@ -1016,13 +1016,23 @@ esp_err_t aes67_rtp_source_write(aes67_rtp_stream_handle_t stream,
     /* Caller provides int32_t samples (left-justified). Store 4 bytes per
      * sample in the ring buffer regardless of the wire word_length. */
     uint32_t byte_count = frame_count * stream->config.channels * sizeof(int32_t);
-    uint32_t written = ringbuf_write(&stream->ring, (const uint8_t *)samples,
-                                     byte_count);
-    if (written < byte_count) {
+    /* All or nothing: a partial write could end inside a frame and shift
+     * every channel of all later packets. */
+    if (ringbuf_free(&stream->ring) < byte_count) {
         stream->status.status_flags |= AES67_RTP_STATUS_OVERFLOW;
         return ESP_ERR_NO_MEM;
     }
+    ringbuf_write(&stream->ring, (const uint8_t *)samples, byte_count);
+    return ESP_OK;
+}
 
+esp_err_t aes67_rtp_source_discard(aes67_rtp_stream_handle_t stream)
+{
+    if (!stream || stream->direction != AES67_STREAM_SOURCE) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    /* reader side: safe against a concurrent writer (it only moves read_pos) */
+    stream->ring.read_pos = stream->ring.write_pos;
     return ESP_OK;
 }
 
@@ -1106,21 +1116,24 @@ esp_err_t aes67_rtp_engine_process_tx(aes67_rtp_engine_handle_t handle,
          * increment sequentially. The receiver validates that each
          * packet's timestamp = prev_timestamp + prev_sample_count.
          * (RAVENNA RTP_audio_stream.c line 647) */
-        if (!s->timestamp_initialized) {
-            s->rtp_timestamp = rtp_timestamp;
-            s->timestamp_initialized = true;
-        }
-
         /* Ring buffer stores int32_t samples (4 bytes each, native endian).
          * Read them into a temp area, then convert to packed network order. */
         uint32_t samples_total = s->samples_per_packet * s->config.channels;
         uint32_t needed_bytes = samples_total * sizeof(int32_t);
 
-        /* Check if we have enough data in the ring buffer */
+        /* Check if we have enough data in the ring buffer. No packet: the
+         * next one takes its timestamp from the caller again, so a gap
+         * stays a gap instead of shifting all later timestamps. */
         uint32_t avail = ringbuf_available(&s->ring);
         if (avail < needed_bytes) {
             s->status.status_flags |= AES67_RTP_STATUS_UNDERFLOW;
+            s->timestamp_initialized = false;
             continue;
+        }
+
+        if (!s->timestamp_initialized) {
+            s->rtp_timestamp = rtp_timestamp;
+            s->timestamp_initialized = true;
         }
 
         uint8_t *pkt = s->tx_packet_buf;
@@ -1154,6 +1167,7 @@ esp_err_t aes67_rtp_engine_process_tx(aes67_rtp_engine_handle_t handle,
                                                batch_bytes);
             if (read_bytes < batch_bytes) {
                 s->status.status_flags |= AES67_RTP_STATUS_UNDERFLOW;
+                s->timestamp_initialized = false;
                 break;
             }
 

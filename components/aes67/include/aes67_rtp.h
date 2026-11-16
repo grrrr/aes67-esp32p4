@@ -144,10 +144,21 @@ esp_err_t aes67_rtp_stream_get_status(aes67_rtp_stream_handle_t stream,
  * @param stream        Source stream handle
  * @param samples       Pointer to interleaved sample data
  * @param frame_count   Number of audio frames (one sample per channel = one frame)
- * @return ESP_OK on success
+ * @return ESP_OK on success; ESP_ERR_NO_MEM if it does not fit (nothing written)
  */
 esp_err_t aes67_rtp_source_write(aes67_rtp_stream_handle_t stream,
                                  const void *samples, uint32_t frame_count);
+
+/**
+ * Drop everything in a source stream's buffer (reader side; safe while the
+ * writer runs). For an application that re-aligns its stream after a stall:
+ * pause writing, discard, resync the timestamp (aes67_rtp_stream_resync_timestamp),
+ * then write again from a packet boundary.
+ *
+ * @param stream  Source stream handle
+ * @return ESP_OK, or ESP_ERR_INVALID_ARG if not a source
+ */
+esp_err_t aes67_rtp_source_discard(aes67_rtp_stream_handle_t stream);
 
 /**
  * Read audio samples from a sink stream's jitter buffer (called by audio driver).
