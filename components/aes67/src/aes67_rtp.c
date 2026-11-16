@@ -1278,8 +1278,18 @@ esp_err_t aes67_rtp_engine_process_tx(aes67_rtp_engine_handle_t handle,
                           sizeof(s->dest_addr));
         }
         if (sent < 0) {
-            ESP_LOGW(TAG, "sendto failed for stream [%d]: %d (%s)",
-                     i, errno, strerror(errno));
+            /* at most one line per second: a console line takes longer
+             * than a packet period and would stall this path further */
+            static int64_t last_log;
+            static uint32_t fails;
+            fails++;
+            const int64_t now = esp_timer_get_time();
+            if (now - last_log >= 1000000) {
+                ESP_LOGW(TAG, "sendto failed for stream [%d]: %d (%s), %lu since last report",
+                         i, errno, strerror(errno), (unsigned long)fails);
+                last_log = now;
+                fails = 0;
+            }
         } else {
             s->status.packets_sent++;
             s->status.last_rtp_timestamp = rtp_timestamp;
