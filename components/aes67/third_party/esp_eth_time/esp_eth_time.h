@@ -10,12 +10,18 @@
 #include <stdint.h>
 #include "esp_err.h"
 #include "esp_eth_driver.h"
+#include "esp_idf_version.h"
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(6, 0, 0)
+#include "esp_eth_mac_esp.h" /* ts_target_exceed_cb_from_isr_t, eth_mac_time_t */
+#endif
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
+#ifndef CLOCK_PTP_SYSTEM /* same value as ESP-IDF 6.1 esp_eth_clock.h */
 #define CLOCK_PTP_SYSTEM         ((clockid_t) 19)
+#endif
 
 /**
  * @brief Configuration of clock during initialization
@@ -23,15 +29,15 @@ extern "C" {
  */
 typedef struct {
     esp_eth_handle_t eth_hndl;
-} esp_eth_clock_cfg_t;
+} aes67_eth_clock_cfg_t;
 
 /**
  * @brief The mode of clock adjustment.
  *
  */
 typedef enum {
-    ETH_CLK_ADJ_FREQ_SCALE,
-} esp_eth_clock_adj_mode_t;
+    AES67_ETH_CLK_ADJ_FREQ_SCALE,
+} aes67_eth_clock_adj_mode_t;
 
 /**
  * @brief Structure containing parameters for adjusting the Ethernet clock.
@@ -42,17 +48,17 @@ typedef struct {
      * @brief The mode of clock adjustment.
      *
      */
-    esp_eth_clock_adj_mode_t mode;
+    aes67_eth_clock_adj_mode_t mode;
 
     /**
-     * @brief The frequency scale factor when in ETH_CLK_ADJ_FREQ_SCALE mode.
+     * @brief The frequency scale factor when in AES67_ETH_CLK_ADJ_FREQ_SCALE mode.
      *
      * This value represents the ratio of the desired frequency to the actual
      * frequency. A value greater than 1 increases the frequency, while a value
      * less than 1 decreases the frequency.
      */
     double freq_scale;
-} esp_eth_clock_adj_param_t;
+} aes67_eth_clock_adj_param_t;
 
 /**
  * @brief Adjust the system clock frequency
@@ -64,7 +70,7 @@ typedef struct {
  *     - 0: Success
  *     - -1: Failure
  */
-int esp_eth_clock_adjtime(clockid_t clk_id, esp_eth_clock_adj_param_t *adj);
+int aes67_eth_clock_adjtime(clockid_t clk_id, aes67_eth_clock_adj_param_t *adj);
 
 /**
  * @brief Set the system clock time
@@ -76,7 +82,7 @@ int esp_eth_clock_adjtime(clockid_t clk_id, esp_eth_clock_adj_param_t *adj);
  *     - 0: Success
  *     - -1: Failure
  */
-int esp_eth_clock_settime(clockid_t clock_id, const struct timespec *tp);
+int aes67_eth_clock_settime(clockid_t clock_id, const struct timespec *tp);
 
 /**
  * @brief Get the current system clock time
@@ -88,7 +94,7 @@ int esp_eth_clock_settime(clockid_t clock_id, const struct timespec *tp);
  *     - 0: Success
  *     - -1: Failure
  */
-int esp_eth_clock_gettime(clockid_t clock_id, struct timespec *tp);
+int aes67_eth_clock_gettime(clockid_t clock_id, struct timespec *tp);
 
 /**
  * @brief Set the target time for the system clock.
@@ -100,7 +106,7 @@ int esp_eth_clock_gettime(clockid_t clock_id, struct timespec *tp);
  *     - 0: Success
  *     - -1: Failure
  */
-int esp_eth_clock_set_target_time(clockid_t clock_id, struct timespec *tp);
+int aes67_eth_clock_set_target_time(clockid_t clock_id, struct timespec *tp);
 
 /**
  * @brief Register callback function invoked on Time Stamp target time exceeded interrupt
@@ -111,8 +117,19 @@ int esp_eth_clock_set_target_time(clockid_t clock_id, struct timespec *tp);
  *     - 0: Success
  *     - -1: Failure
  */
-int esp_eth_clock_register_target_cb(clockid_t clock_id,
+int aes67_eth_clock_register_target_cb(clockid_t clock_id,
                                      ts_target_exceed_cb_from_isr_t ts_callback);
+
+/**
+ * @brief Adjust the base PTP clock frequency increment by ppb
+ *
+ * Absolute relative to the base addend (not compounding).
+ *
+ * @param adj_ppb adjustment in parts per billion
+ *
+ * @return ESP_OK on success, else the MAC driver's error
+ */
+esp_err_t aes67_eth_clock_adj_ppb(int32_t adj_ppb);
 
 /**
  * @brief Initialize the Ethernet clock subsystem
@@ -124,7 +141,7 @@ int esp_eth_clock_register_target_cb(clockid_t clock_id,
  *     - ESP_OK: Success
  *     - ESP_FAIL: Failure
  */
-esp_err_t esp_eth_clock_init(clockid_t clock_id, esp_eth_clock_cfg_t *cfg);
+esp_err_t aes67_eth_clock_init(clockid_t clock_id, aes67_eth_clock_cfg_t *cfg);
 
 #ifdef __cplusplus
 }

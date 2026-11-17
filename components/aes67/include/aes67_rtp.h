@@ -213,6 +213,7 @@ esp_err_t aes67_rtp_engine_process_tx(aes67_rtp_engine_handle_t handle,
 /**
  * Get the stream buffer used for RTP RX -> playback decoupling.
  */
+#include "freertos/FreeRTOS.h"
 #include "freertos/stream_buffer.h"
 StreamBufferHandle_t aes67_rtp_engine_get_stream_buf(aes67_rtp_engine_handle_t handle);
 

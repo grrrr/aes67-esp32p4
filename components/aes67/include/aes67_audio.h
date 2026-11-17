@@ -140,6 +140,7 @@ void aes67_audio_get_staging_stats(aes67_audio_handle_t handle,
  * BEFORE aes67_audio_start(). The DMA ISR reads from the slot ring
  * which is fed by aes67_audio_slot_write().
  */
+#include "freertos/FreeRTOS.h"
 #include "freertos/stream_buffer.h"
 void aes67_audio_set_isr_stream_buf(aes67_audio_handle_t handle,
                                      StreamBufferHandle_t sbuf);

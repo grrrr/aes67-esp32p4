@@ -66,7 +66,7 @@ IRAM_ATTR static bool hw_timer_isr(esp_eth_mediator_t *eth, void *user_args)
      * (e.g., after a PTP clock jump), re-anchor to now + one period
      * instead of looping to catch up (which would hang the ISR). */
     struct timespec now;
-    esp_eth_clock_gettime(CLOCK_PTP_SYSTEM, &now);
+    aes67_eth_clock_gettime(CLOCK_PTP_SYSTEM, &now);
 
     int64_t diff_ns = ((int64_t)s_timer.next_time.tv_sec - now.tv_sec) * 1000000000LL
                     + (s_timer.next_time.tv_nsec - now.tv_nsec);
@@ -80,7 +80,7 @@ IRAM_ATTR static bool hw_timer_isr(esp_eth_mediator_t *eth, void *user_args)
         s_timer.next_time.tv_nsec = (long)(next_ns % 1000000000ULL);
     }
 
-    esp_eth_clock_set_target_time(CLOCK_PTP_SYSTEM, &s_timer.next_time);
+    aes67_eth_clock_set_target_time(CLOCK_PTP_SYSTEM, &s_timer.next_time);
 
     return false;
 }
@@ -99,7 +99,7 @@ esp_err_t aes67_hw_timer_init(uint32_t frame_period_ns,
     s_timer.running = false;
 
     /* Register the ISR callback with the EMAC PTP target time mechanism */
-    int ret = esp_eth_clock_register_target_cb(CLOCK_PTP_SYSTEM, hw_timer_isr);
+    int ret = aes67_eth_clock_register_target_cb(CLOCK_PTP_SYSTEM, hw_timer_isr);
     if (ret != 0) {
         ESP_LOGE(TAG, "failed to register target time callback: %d", ret);
         return ESP_FAIL;
@@ -113,7 +113,7 @@ esp_err_t aes67_hw_timer_start(void)
 {
     /* Get current PTP time and align to the next frame boundary */
     struct timespec now;
-    if (esp_eth_clock_gettime(CLOCK_PTP_SYSTEM, &now) != 0) {
+    if (aes67_eth_clock_gettime(CLOCK_PTP_SYSTEM, &now) != 0) {
         ESP_LOGE(TAG, "failed to get PTP time");
         return ESP_FAIL;
     }
@@ -128,7 +128,7 @@ esp_err_t aes67_hw_timer_start(void)
     s_timer.running = true;
 
     /* Program the first target time */
-    esp_eth_clock_set_target_time(CLOCK_PTP_SYSTEM, &s_timer.next_time);
+    aes67_eth_clock_set_target_time(CLOCK_PTP_SYSTEM, &s_timer.next_time);
 
     ESP_LOGI(TAG, "started (first target: %lld.%09ld)",
              (long long)s_timer.next_time.tv_sec,

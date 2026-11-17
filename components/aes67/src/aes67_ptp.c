@@ -307,12 +307,12 @@ esp_err_t aes67_ptp_init(esp_eth_handle_t eth_handle, const aes67_ptp_config_t *
     }
 
     /* Initialize the hardware PTP clock tied to the EMAC */
-    esp_eth_clock_cfg_t clk_cfg = {
+    aes67_eth_clock_cfg_t clk_cfg = {
         .eth_hndl = eth_handle,
     };
-    ret = esp_eth_clock_init(CLOCK_PTP_SYSTEM, &clk_cfg);
+    ret = aes67_eth_clock_init(CLOCK_PTP_SYSTEM, &clk_cfg);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "esp_eth_clock_init failed: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "aes67_eth_clock_init failed: %s", esp_err_to_name(ret));
         free(ctx);
         return ret;
     }
@@ -452,9 +452,9 @@ esp_err_t aes67_ptp_get_time_ns(aes67_ptp_handle_t handle, uint64_t *time_ns)
     ESP_RETURN_ON_FALSE(time_ns != NULL, ESP_ERR_INVALID_ARG, TAG, "time_ns is NULL");
 
     struct timespec ts;
-    int ret = esp_eth_clock_gettime(CLOCK_PTP_SYSTEM, &ts);
+    int ret = aes67_eth_clock_gettime(CLOCK_PTP_SYSTEM, &ts);
     if (ret != 0) {
-        ESP_LOGE(TAG, "esp_eth_clock_gettime failed (%d)", ret);
+        ESP_LOGE(TAG, "aes67_eth_clock_gettime failed (%d)", ret);
         return ESP_FAIL;
     }
 
@@ -468,9 +468,9 @@ esp_err_t aes67_ptp_get_time(aes67_ptp_handle_t handle, uint32_t *sec, uint32_t 
     ESP_RETURN_ON_FALSE(sec != NULL && nsec != NULL, ESP_ERR_INVALID_ARG, TAG, "output is NULL");
 
     struct timespec ts;
-    int ret = esp_eth_clock_gettime(CLOCK_PTP_SYSTEM, &ts);
+    int ret = aes67_eth_clock_gettime(CLOCK_PTP_SYSTEM, &ts);
     if (ret != 0) {
-        ESP_LOGE(TAG, "esp_eth_clock_gettime failed (%d)", ret);
+        ESP_LOGE(TAG, "aes67_eth_clock_gettime failed (%d)", ret);
         return ESP_FAIL;
     }
 
